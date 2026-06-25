@@ -4,7 +4,9 @@
 
 <p>Shows whatever you're playing as a browser source. No Spotify API keys, no logins, no setup - it just reads it from Windows.</p>
 
-<video src="https://github.com/mopoIo/Yet-Another-Now-Playing-Widget/raw/main/sample.mp4" width="100%" autoplay loop muted playsinline controls></video>
+
+https://github.com/user-attachments/assets/2882c64a-93f3-48f0-8b30-ce33a525cf96
+
 
 <p><b><a href="https://github.com/mopoIo/Yet-Another-Now-Playing-Widget/releases/latest">Don't care about the technical stuff and just want to download it? Click here.</a></b></p>
 
