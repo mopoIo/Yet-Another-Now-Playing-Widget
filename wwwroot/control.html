@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Yet Another Now Playing Widget</title>
+<style>
+  :root { --accent: #f0f0f0; --bg: #101010; --card: #181818; --line: #2a2a2a; --muted: #8a8a8a; --text: #e8e8e8; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh; padding: 24px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; }
+
+  header { margin-bottom: 8px; }
+  h1 { font-size: 20px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  .sub a { color: var(--muted); }
+  .sub a:hover { color: var(--text); }
+
+  .urlbox {
+    display: flex; gap: 8px; align-items: center; margin-top: 16px;
+    background: var(--card); border: 1px solid var(--line); padding: 8px;
+  }
+  .urlbox code { font-size: 13px; color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button {
+    font: inherit; font-size: 13px; border: 1px solid var(--line); background: #222; color: var(--text);
+    padding: 7px 12px; cursor: pointer; transition: background .12s;
+  }
+  button:hover { background: #2a2a2a; }
+  input[type=color] { width: 42px; height: 30px; padding: 2px; border: 1px solid var(--line); background: #222; cursor: pointer; flex: 0 0 auto; }
+
+  .latchstatus {
+    margin-top: 16px; padding: 12px; font-size: 13px;
+    background: var(--card); border: 1px solid var(--accent); color: var(--text);
+  }
+  .latchstatus b { color: #fff; }
+
+  .section-label { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 24px 0 10px; }
+
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .row, .follow, .optrow {
+    display: flex; align-items: center; gap: 12px; padding: 12px;
+    background: var(--card); border: 1px solid var(--line);
+  }
+  .row, .follow { cursor: pointer; transition: background .12s, border-color .12s; }
+  .row:hover, .follow:hover { background: #1f1f1f; }
+  .row.latched, .follow.latched { border-color: var(--accent); }
+
+  .row .art {
+    width: 48px; height: 48px; flex: 0 0 auto; overflow: hidden;
+    background: #222; display: grid; place-items: center; color: var(--muted); font-size: 20px;
+  }
+  .row .art img { width: 100%; height: 100%; object-fit: cover; }
+  .row .meta, .follow .meta, .optrow .meta { min-width: 0; flex: 1; }
+  .row .app { font-size: 12px; color: var(--muted); }
+  .row .t, .follow .t, .optrow .t { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .row .a, .follow .a, .optrow .a { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .right { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+
+  .follow .t { margin-top: 0; }
+  #list { margin-top: 8px; }
+
+  .tag { font-size: 11px; color: var(--muted); }
+  .tag.on { background: var(--accent); color: #111; padding: 2px 7px; font-weight: 600; }
+
+  .switch { position: relative; width: 42px; height: 24px; flex: 0 0 auto; cursor: pointer; }
+  .switch input { display: none; }
+  .switch .track { position: absolute; inset: 0; background: #333; transition: .15s; }
+  .switch .knob { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; background: #888; transition: .15s; }
+  .switch input:checked + .track { background: var(--accent); }
+  .switch input:checked + .track + .knob { transform: translateX(18px); background: #111; }
+
+  .themes { display: flex; gap: 8px; flex-wrap: wrap; }
+  .theme-chip {
+    padding: 9px 14px; cursor: pointer;
+    background: var(--card); border: 1px solid var(--line); font-size: 13px; transition: border-color .12s, background .12s;
+  }
+  .theme-chip:hover { background: #1f1f1f; }
+  .theme-chip.active { border-color: var(--accent); }
+
+  .empty { color: var(--muted); font-size: 13px; padding: 20px; text-align: center; border: 1px dashed var(--line); margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Yet Another Now Playing Widget</h1>
+    <div class="sub">Pick which media source your stream overlay shows. Latch one so a new tab can't hijack it. <a href="https://github.com/mopoIo/Yet-Another-Now-Playing-Widget" target="_blank" rel="noopener">View on GitHub</a></div>
+    <div class="urlbox">
+      <code id="overlayUrl"></code>
+      <button id="copyBtn">Copy overlay URL</button>
+      <button id="openBtn">Preview</button>
+    </div>
+  </header>
+
+  <div id="latchStatus" class="latchstatus" style="display:none"></div>
+
+  <div class="section-label">Detected sources <span id="count" style="opacity:.6"></span></div>
+  <div class="follow" id="follow" data-id="">
+    <div class="meta">
+      <div class="t">Follow current (auto)</div>
+      <div class="a">Mirrors whatever Windows marks as active. Default.</div>
+    </div>
+    <span class="tag on" id="followOn" style="display:none">On overlay</span>
+  </div>
+  <div class="list" id="list"></div>
+  <div class="empty" id="empty" style="display:none">No media sessions detected. Start playing something like Spotify or a browser tab.</div>
+
+  <div class="section-label">Layout</div>
+  <div class="themes" id="layouts"></div>
+
+  <div class="section-label">Accent color</div>
+  <div class="optrow">
+    <div class="meta">
+      <div class="t">Overlay accent</div>
+      <div class="a">Highlight colour for the progress bar, equalizer, and labels.</div>
+    </div>
+    <input type="color" id="accent" value="#1db954" aria-label="Accent color">
+    <button id="accentReset">Reset</button>
+  </div>
+
+  <div class="section-label">Options</div>
+  <div class="optrow">
+    <div class="meta">
+      <div class="t">Show source app on overlay</div>
+      <div class="a">When on, layouts that have a label show the source (e.g. Spotify). Off by default.</div>
+    </div>
+    <label class="switch"><input type="checkbox" id="showApp"><span class="track"></span><span class="knob"></span></label>
+  </div>
+  <div class="optrow" style="margin-top:8px">
+    <div class="meta">
+      <div class="t">Hide when paused</div>
+      <div class="a">When on, the overlay transitions away while the track is paused. Off by default.</div>
+    </div>
+    <label class="switch"><input type="checkbox" id="hidePaused"><span class="track"></span><span class="knob"></span></label>
+  </div>
+  <div class="optrow" style="margin-top:8px">
+    <div class="meta">
+      <div class="t">Launch at login</div>
+      <div class="a">Start automatically in the tray when you sign in to Windows. Off by default.</div>
+    </div>
+    <label class="switch"><input type="checkbox" id="launchStartup"><span class="track"></span><span class="knob"></span></label>
+  </div>
+</div>
+
+<script>
+(() => {
+  const overlayUrl = location.origin + "/overlay";
+  document.getElementById("overlayUrl").textContent = overlayUrl;
+  document.getElementById("copyBtn").onclick = async (e) => {
+    try { await navigator.clipboard.writeText(overlayUrl); e.target.textContent = "Copied"; setTimeout(() => e.target.textContent = "Copy overlay URL", 1200); } catch {}
+  };
+  document.getElementById("openBtn").onclick = () => window.open(overlayUrl, "_blank");
+
+  const listEl = document.getElementById("list");
+  const emptyEl = document.getElementById("empty");
+  const followEl = document.getElementById("follow");
+  const followOn = document.getElementById("followOn");
+  const countEl = document.getElementById("count");
+  const showAppEl = document.getElementById("showApp");
+  const hidePausedEl = document.getElementById("hidePaused");
+  const launchStartupEl = document.getElementById("launchStartup");
+  const latchStatus = document.getElementById("latchStatus");
+  const layoutsEl = document.getElementById("layouts");
+  const accentEl = document.getElementById("accent");
+  const accentResetEl = document.getElementById("accentReset");
+
+  let ws;
+  function send(obj){ try { ws && ws.readyState === 1 && ws.send(JSON.stringify(obj)); } catch {} }
+
+  followEl.onclick = () => send({ type: "latch", id: null });
+  showAppEl.onchange = () => send({ type: "showApp", value: showAppEl.checked });
+  hidePausedEl.onchange = () => send({ type: "hidePaused", value: hidePausedEl.checked });
+  launchStartupEl.onchange = () => send({ type: "launchOnStartup", value: launchStartupEl.checked });
+  accentEl.onchange = () => send({ type: "setAccent", value: accentEl.value });
+  accentResetEl.onclick = () => { accentEl.value = "#1db954"; send({ type: "setAccent", value: "" }); };
+
+  // layout picker; keep in sync with LAYOUTS in overlay.html
+  const LAYOUTS = [
+    { id: "classic",  name: "Classic" },
+    { id: "progress", name: "Progress" },
+    { id: "full",     name: "Full (times)" },
+  ];
+  layoutsEl.innerHTML = LAYOUTS.map(l => '<div class="theme-chip" data-id="' + l.id + '">' + l.name + '</div>').join("");
+  [...layoutsEl.querySelectorAll(".theme-chip")].forEach(c => c.onclick = () => send({ type: "setLayout", value: c.dataset.id }));
+
+  function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+  function render(state) {
+    const latched = state.latchedId || null;
+    const sessions = state.sessions || [];
+
+    followEl.classList.toggle("latched", !latched);
+    followOn.style.display = !latched ? "inline-block" : "none";
+    if (document.activeElement !== showAppEl) showAppEl.checked = !!state.showApp;
+    if (document.activeElement !== hidePausedEl) hidePausedEl.checked = !!state.hidePaused;
+    if (document.activeElement !== launchStartupEl) launchStartupEl.checked = !!state.launchOnStartup;
+    if (document.activeElement !== accentEl) accentEl.value = state.accent || "#1db954";
+    const layout = state.layout || "classic";
+    [...layoutsEl.querySelectorAll(".theme-chip")].forEach(c => c.classList.toggle("active", c.dataset.id === layout));
+
+    const latchedSession = sessions.find(s => s.id === latched);
+    if (latched && !latchedSession) {
+      latchStatus.style.display = "block";
+      latchStatus.innerHTML = 'Latched to <b>' + esc(state.latchedName || "a source") + '</b>, waiting for it to start.';
+    } else {
+      latchStatus.style.display = "none";
+    }
+
+    countEl.textContent = sessions.length ? "(" + sessions.length + ")" : "";
+    emptyEl.style.display = sessions.length ? "none" : "block";
+
+    listEl.innerHTML = sessions.map(s => {
+      const isLatched = latched && s.id === latched;
+      const playing = s.status === "Playing";
+      const art = s.thumbnail
+        ? '<img src="' + s.thumbnail + '" alt="">'
+        : "♪";
+      return (
+        '<div class="row ' + (isLatched ? "latched" : "") + '" data-id="' + esc(s.id) + '">' +
+          '<div class="art">' + art + '</div>' +
+          '<div class="meta">' +
+            '<div class="app">' + esc(s.app) +
+              (s.isCurrent ? ' (current)' : '') +
+            '</div>' +
+            '<div class="t">' + esc(s.title || "") + '</div>' +
+            '<div class="a">' + esc(s.artist || s.album || "") + '</div>' +
+          '</div>' +
+          '<div class="right">' +
+            (isLatched ? '<span class="tag on">On overlay</span>' : '') +
+            '<span class="tag">' + (playing ? "playing" : "paused") + '</span>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join("");
+
+    [...listEl.querySelectorAll(".row")].forEach(row => {
+      row.onclick = () => send({ type: "latch", id: row.dataset.id });
+    });
+  }
+
+  let backoff = 500;
+  function connect() {
+    ws = new WebSocket("ws://" + location.host + "/ws");
+    ws.onopen = () => { backoff = 500; };
+    ws.onmessage = (e) => { try { render(JSON.parse(e.data)); } catch {} };
+    ws.onclose = () => { setTimeout(connect, backoff); backoff = Math.min(backoff * 1.6, 5000); };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Overlay - Yet Another Now Playing Widget</title>
+<style>
+  :root {
+    --accent:#1db954; --title-color:#fff; --artist-color:rgba(255,255,255,.78);
+    --font:"Segoe UI", system-ui, -apple-system, sans-serif; --title-weight:800;
+    --text-shadow:0 2px 10px rgba(0,0,0,.65), 0 0 3px rgba(0,0,0,.55);
+    --art-shadow:0 0 max(4px,2.2vh) rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.06);
+    --art-radius:max(4px, min(7vh, 2.9vw));
+    --in:.72s; --out:.5s;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { width:100%; height:100%; background:transparent; overflow:hidden; }
+  body { font-family:var(--font); color:var(--title-color); -webkit-font-smoothing:antialiased; }
+  #stage { position:fixed; inset:0; }
+
+  .eq { display:inline-flex; align-items:flex-end; gap:.18em; height:1em; }
+  .eq span { width:.22em; background:var(--accent); border-radius:1px; animation:bounce 1s ease-in-out infinite; }
+  .eq span:nth-child(2){animation-delay:.2s} .eq span:nth-child(3){animation-delay:.4s} .eq span:nth-child(4){animation-delay:.15s}
+  body.paused .eq span { animation-play-state:paused; height:.25em !important; }
+  @keyframes bounce { 0%,100%{height:.25em} 50%{height:1em} }
+
+  /* marquee: long text scrolls forever with soft faded edges, no hard crop.
+     the clip box is padded much taller than the text (cancelled by an equal negative margin so
+     layout doesn't move). we only fade left/right; the top/bottom edges sit ~0.9em off the text
+     so descenders and the drop shadow never get cut. */
+  .mq-clip { padding-top:.9em; padding-bottom:.9em; margin-top:-.9em; margin-bottom:-.9em; }
+  .mq-track { display:inline-flex; gap:1.8em; will-change:transform; }
+  .mq-item { white-space:nowrap; }
+  [data-np="title"].scrolling .mq-clip, [data-np="artist"].scrolling .mq-clip {
+    overflow:hidden;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+            mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+    -webkit-mask-repeat:no-repeat; mask-repeat:no-repeat;
+  }
+  [data-np="title"].scrolling .mq-track, [data-np="artist"].scrolling .mq-track {
+    animation:marquee var(--scroll-duration, 14s) linear infinite;
+  }
+  @keyframes marquee { to { transform:translateX(calc(var(--scroll-distance,0px) * -1)); } }
+
+  .anim { animation-duration:var(--in); animation-fill-mode:both; animation-timing-function:cubic-bezier(.22,.7,.2,1); }
+  .anim-fadeOut, .anim-fadeOutLeft, .anim-fadeOutDown { animation-duration:var(--out); animation-timing-function:cubic-bezier(.55,0,.7,.2); }
+  .anim-fadeInUp{animation-name:fadeInUp} .anim-fadeOutDown{animation-name:fadeOutDown}
+  .anim-fadeInLeft{animation-name:fadeInLeft} .anim-fadeOutLeft{animation-name:fadeOutLeft}
+  .anim-fadeIn{animation-name:fadeIn} .anim-fadeOut{animation-name:fadeOut}
+  @keyframes fadeInUp   { from{opacity:0;transform:translate3d(0,40%,0)}    to{opacity:1;transform:none} }
+  @keyframes fadeOutDown{ from{opacity:1;transform:none}                    to{opacity:0;transform:translate3d(0,40%,0)} }
+  @keyframes fadeInLeft { from{opacity:0;transform:translate3d(-1.4em,0,0)} to{opacity:1;transform:none} }
+  @keyframes fadeOutLeft{ from{opacity:1;transform:none}                    to{opacity:0;transform:translate3d(-1.4em,0,0)} }
+  @keyframes fadeIn     { from{opacity:0} to{opacity:1} }
+  @keyframes fadeOut    { from{opacity:1} to{opacity:0} }
+</style>
+<style id="layoutCss"></style>
+</head>
+<body>
+  <div id="stage"></div>
+
+<script>
+(() => {
+  const qs = new URLSearchParams(location.search);
+  const accentParam = (() => { const a = qs.get("accent"); return a ? (a.startsWith("#") ? a : "#" + a) : null; })();
+  if (accentParam) document.documentElement.style.setProperty("--accent", accentParam);
+  const speed = parseFloat(qs.get("speed")) || 1;
+  if (speed !== 1) {
+    document.documentElement.style.setProperty("--in", (0.72 / speed) + "s");
+    document.documentElement.style.setProperty("--out", (0.5 / speed) + "s");
+  }
+  const stage = document.getElementById("stage");
+  const layoutCss = document.getElementById("layoutCss");
+
+  // each layout is just { label, css, html }. mark elements with data-np hooks and the engine
+  // wires them up, so a new layout needs zero JS. hooks the engine binds:
+  //   data-np="art|title|artist|app|elapsed|duration|progress"
+  //   data-in / data-out                entrance + exit animation names (per element)
+  //   data-in-update / data-out-update  optional override for the track-change animation
+  //   data-seq                          reveal order (low first; exit reverses)
+  const ROW_BASE = `
+    .np-row{position:fixed;inset:0;display:flex;align-items:center;--row-gap:clamp(8px,min(3vh,2.4vw),44px);gap:var(--row-gap)}
+    .np-art{position:relative;z-index:2;flex:0 0 auto;width:min(100vh,42vw);height:min(100vh,42vw);overflow:hidden;border-radius:var(--art-radius);box-shadow:var(--art-shadow);background:linear-gradient(135deg,#2a2a30,#16161a)}
+    .np-art img{width:100%;height:100%;object-fit:cover;display:block}
+    /* clip the text to its own box so a title sliding left on exit can't bleed under the art
+       while the art is mid-fade. the box is stretched left by one --row-gap (padding + equal
+       negative margin keep the real position), so the clip edge lands on the art's edge: text
+       travels the whole gap and only vanishes once it reaches the art, never before. the vertical
+       padding (cancelled the same way) keeps the clip off descenders and shadows. */
+    .np-info{position:relative;z-index:1;min-width:0;flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;padding:1.4em .5em 1.4em var(--row-gap);margin:-1.4em 0 -1.4em calc(-1 * var(--row-gap));overflow:hidden;text-shadow:var(--text-shadow)}
+    .np-eyebrow{display:none;align-items:center;gap:.6em;font-size:clamp(8px,min(11vh,3vw),28px);letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--accent);margin-bottom:.35em}
+    body.show-app .np-eyebrow{display:flex}
+    [data-np="title"]{font-weight:var(--title-weight);color:var(--title-color);line-height:1.4;font-size:clamp(13px,min(30vh,8.5vw),96px)}
+    [data-np="artist"]{color:var(--artist-color);line-height:1.4;margin-top:.08em;font-size:clamp(10px,min(19vh,5.4vw),60px)}
+    /* portrait/square sources stack vertically: art on top, centred text */
+    @media (max-aspect-ratio:1/1){
+      .np-row{flex-direction:column;align-items:center;justify-content:center;gap:clamp(8px,3vh,34px)}
+      .np-art{width:min(74vw,56vh);height:min(74vw,56vh)}
+      .np-info{align-self:stretch;flex:0 0 auto;align-items:center;justify-content:center;padding:0 5vw;margin:0;overflow:visible}
+      .np-eyebrow{justify-content:center}
+      [data-np="title"]{width:100%;text-align:center;font-size:clamp(15px,min(9vh,8.5vw),76px)}
+      [data-np="artist"]{width:100%;text-align:center;font-size:clamp(11px,min(6vh,5.6vw),50px)}
+      .np-info .mq-track{justify-content:center}
+      .np-bar,.np-times{width:100%}
+    }`;
+  const TRACK = `
+    .np-bar{margin-top:max(6px,1.6vh);height:max(3px,1.4vh);border-radius:99px;background:rgba(255,255,255,.32);box-shadow:inset 0 0 0 1px rgba(0,0,0,.25);overflow:hidden}
+    .np-bar>i{display:block;height:100%;width:0%;background:var(--accent);border-radius:99px;transition:width .25s linear}`;
+  const EYEBROW = `<div class="np-eyebrow" data-in="fadeInLeft" data-out="fadeOutLeft" data-seq="1" style="display:none"><span class="eq"><span></span><span></span><span></span><span></span></span><span data-np="app"></span></div>`;
+  const ART = `<div class="np-art" data-np="art" data-in="fadeInUp" data-out="fadeOutDown" data-in-update="fadeIn" data-out-update="fadeOut" data-seq="0" style="display:none"><img></div>`;
+  const TITLE = `<div data-np="title" data-in="fadeInLeft" data-out="fadeOutLeft" data-seq="1" style="display:none"></div>`;
+  const ARTIST = `<div data-np="artist" data-in="fadeInLeft" data-out="fadeOutLeft" data-seq="1" style="display:none"></div>`;
+
+  const LAYOUTS = {
+    classic: {
+      label: "Classic",
+      css: ROW_BASE,
+      html: `<div class="np-row">${ART}<div class="np-info">${EYEBROW}${TITLE}${ARTIST}</div></div>`,
+    },
+    progress: {
+      label: "Progress",
+      css: ROW_BASE + TRACK,
+      html: `<div class="np-row">${ART}<div class="np-info">${EYEBROW}${TITLE}${ARTIST}
+        <div class="np-bar" data-in="fadeInLeft" data-out="fadeOutLeft" data-seq="1" style="display:none"><i data-np="progress"></i></div></div></div>`,
+    },
+    full: {
+      label: "Full (times)",
+      css: ROW_BASE + `
+        .np-times{display:flex;align-items:center;gap:.7em;margin-top:max(6px,1.5vh);font-size:clamp(9px,min(12vh,3.4vw),30px);color:var(--artist-color);font-variant-numeric:tabular-nums}
+        .np-times .tk{flex:1;height:max(3px,1.2vh);border-radius:99px;background:rgba(255,255,255,.32);box-shadow:inset 0 0 0 1px rgba(0,0,0,.25);overflow:hidden}
+        .np-times .tk>i{display:block;height:100%;width:0%;background:var(--accent);border-radius:99px;transition:width .25s linear}`,
+      html: `<div class="np-row">${ART}<div class="np-info">${EYEBROW}${TITLE}${ARTIST}
+        <div class="np-times" data-in="fadeInLeft" data-out="fadeOutLeft" data-seq="1" style="display:none">
+          <span data-np="elapsed">0:00</span><span class="tk"><i data-np="progress"></i></span><span data-np="duration">0:00</span>
+        </div></div></div>`,
+    },
+  };
+  const urlLayout = LAYOUTS[qs.get("layout")] ? qs.get("layout") : null;
+
+  function makeMarquee(viewport) {
+    const clip = document.createElement("div");
+    clip.className = "mq-clip";
+    const track = document.createElement("div");
+    track.className = "mq-track";
+    clip.appendChild(track);
+    viewport.appendChild(clip);
+    let text = "";
+    function build(copies) {
+      track.textContent = "";
+      for (let i = 0; i < copies; i++) { const s = document.createElement("span"); s.className = "mq-item"; s.textContent = text; track.appendChild(s); }
+    }
+    function measure() {
+      if (!viewport.isConnected || viewport.clientWidth === 0 || getComputedStyle(viewport).display === "none") return;
+      const item = track.firstElementChild; if (!item) return;
+      if (item.scrollWidth > viewport.clientWidth + 1) {
+        if (track.children.length < 3) build(3);
+        const dist = track.children[1].offsetLeft - track.children[0].offsetLeft;
+        const fs = parseFloat(getComputedStyle(item).fontSize) || 24;
+        track.style.setProperty("--scroll-distance", dist + "px");
+        track.style.setProperty("--scroll-duration", (dist / (Math.max(40, fs * 1.6) * speed)) + "s");
+        viewport.classList.add("scrolling");
+      } else {
+        if (track.children.length !== 1) build(1);
+        viewport.classList.remove("scrolling");
+      }
+    }
+    function setText(t) { text = t || ""; build(1); viewport.classList.remove("scrolling"); measure(); }
+    new ResizeObserver(measure).observe(viewport);
+    return { setText, measure };
+  }
+
+  function animate(el, name) {
+    return new Promise(res => {
+      if (!el || getComputedStyle(el).display === "none") { res(); return; }
+      const cls = "anim-" + name; let timer;
+      const done = (e) => { if (e && e.target !== el) return; el.removeEventListener("animationend", done); clearTimeout(timer); el.classList.remove("anim", cls); res(); };
+      el.classList.add("anim", cls);
+      el.addEventListener("animationend", done);
+      timer = setTimeout(done, 1600);
+    });
+  }
+  const showEl = async (el, name) => { if (!el) return; el.style.display = ""; await animate(el, name); };
+  const hideEl = async (el, name) => { if (!el) return; await animate(el, name); el.style.display = "none"; };
+
+  let H = {};
+  let currentLayout = "classic";
+  let shown = false, curHasThumb = false;
+  let cur = { id: "", title: "", artist: "", thumb: "" };
+  let playback = { base: 0, at: 0, dur: 0, playing: false };
+  let lastState = null, pending, busy = false, gen = 0;
+
+  function remeasure() { (H.titles || []).forEach(o => o.mq.measure()); (H.artists || []).forEach(o => o.mq.measure()); }
+  function fmtTime(s) { s = Math.max(0, Math.floor(s || 0)); const m = Math.floor(s / 60); const ss = s % 60; return m + ":" + (ss < 10 ? "0" : "") + ss; }
+
+  function loadLayout(name) {
+    const lay = LAYOUTS[name] || LAYOUTS.classic;
+    currentLayout = LAYOUTS[name] ? name : "classic";
+    gen++; busy = false; pending = undefined; shown = false; curHasThumb = false;
+    cur = { id: "", title: "", artist: "", thumb: "" };
+    layoutCss.textContent = lay.css;
+    stage.innerHTML = lay.html;
+    H = {
+      anim:     [...stage.querySelectorAll("[data-in]")],
+      art:      [...stage.querySelectorAll('[data-np="art"]')],
+      app:      [...stage.querySelectorAll('[data-np="app"]')],
+      elapsed:  [...stage.querySelectorAll('[data-np="elapsed"]')],
+      duration: [...stage.querySelectorAll('[data-np="duration"]')],
+      progress: [...stage.querySelectorAll('[data-np="progress"]')],
+      titles:   [...stage.querySelectorAll('[data-np="title"]')].map(el => ({ el, mq: makeMarquee(el) })),
+      artists:  [...stage.querySelectorAll('[data-np="artist"]')].map(el => ({ el, mq: makeMarquee(el) })),
+    };
+    if (lastState) render(lastState);
+  }
+
+  function bySeq(els) {
+    const m = new Map();
+    for (const el of els) { const s = +(el.dataset.seq || 0); (m.get(s) || m.set(s, []).get(s)).push(el); }
+    return [...m.keys()].sort((a, b) => a - b).map(k => m.get(k));
+  }
+  const inAnim  = (el, upd) => (upd && el.dataset.inUpdate)  || el.dataset.in  || "fadeIn";
+  const outAnim = (el, upd) => (upd && el.dataset.outUpdate) || el.dataset.out || "fadeOut";
+  const isArt = (el) => el.matches('[data-np="art"]');
+
+  function setText(t) { H.titles.forEach(o => o.mq.setText(t.title)); H.artists.forEach(o => o.mq.setText(t.artist)); }
+  function setArt(t) {
+    if (!t.thumb) return;
+    for (const box of H.art) { const img = box.matches("img") ? box : box.querySelector("img"); if (img) img.src = t.thumb; else box.style.backgroundImage = `url("${t.thumb}")`; }
+  }
+
+  async function reveal() {
+    for (const group of bySeq(H.anim)) {
+      await Promise.all(group.map(el => {
+        if (isArt(el) && !curHasThumb) { el.style.display = "none"; return Promise.resolve(); }
+        return showEl(el, inAnim(el, false));
+      }));
+    }
+  }
+  async function hide() {
+    for (const group of bySeq(H.anim).reverse()) await Promise.all(group.map(el => hideEl(el, outAnim(el, false))));
+  }
+
+  async function applyTransition(t) {
+    if (!t.has) { if (shown) { await hide(); shown = false; cur = { id: "", title: "", artist: "", thumb: "" }; curHasThumb = false; } return; }
+
+    if (!shown) {
+      curHasThumb = !!t.thumb; setText(t); setArt(t);
+      await reveal();
+      shown = true; cur = { ...t }; remeasure();
+      return;
+    }
+
+    const artChanged = t.thumb !== cur.thumb, titleChanged = t.title !== cur.title, artistChanged = t.artist !== cur.artist;
+    if (!artChanged && !titleChanged && !artistChanged) { cur = { ...t }; return; }
+    curHasThumb = !!t.thumb;
+
+    const jobs = [];
+    if (artChanged) for (const el of H.art) jobs.push((async () => {
+      await hideEl(el, outAnim(el, true)); if (t.thumb) { setArt(t); await showEl(el, inAnim(el, true)); } else el.style.display = "none";
+    })());
+    if (titleChanged) for (const o of H.titles) jobs.push((async () => { await hideEl(o.el, "fadeOutLeft"); o.mq.setText(t.title); await showEl(o.el, "fadeInLeft"); })());
+    if (artistChanged) for (const o of H.artists) jobs.push((async () => { await hideEl(o.el, "fadeOutLeft"); o.mq.setText(t.artist); await showEl(o.el, "fadeInLeft"); })());
+    await Promise.all(jobs);
+    cur = { ...t }; remeasure();
+  }
+
+  async function pump() {
+    if (busy) return;
+    busy = true; const g = gen;
+    while (pending !== undefined && g === gen) { const t = pending; pending = undefined; try { await applyTransition(t); } catch {} }
+    busy = false;
+  }
+
+  function render(state) {
+    lastState = state;
+    if (!urlLayout && state.layout && state.layout !== currentLayout) { loadLayout(state.layout); return; }
+    document.body.classList.toggle("show-app", !!state.showApp);
+    if (!accentParam) {
+      if (state.accent) document.documentElement.style.setProperty("--accent", state.accent);
+      else document.documentElement.style.removeProperty("--accent");
+    }
+
+    const a = state.active;
+    const paused = !!a && a.status !== "Playing";
+    const hideForPause = !!state.hidePaused && paused;
+
+    if (a) {
+      document.body.classList.toggle("paused", paused);
+      H.app.forEach(e => e.textContent = a.app || "");
+      H.duration.forEach(d => d.textContent = fmtTime(a.duration || 0));
+      playback = { base: a.position || 0, at: performance.now(), dur: a.duration || 0, playing: !paused };
+    }
+    pending = (a && !hideForPause)
+      ? { has: true, id: a.id, title: a.title || a.app || "Unknown", artist: a.artist || a.album || "", thumb: a.thumbnail || "" }
+      : { has: false };
+    pump();
+  }
+
+  function tick() {
+    if (playback.dur > 0) {
+      const c = Math.max(0, Math.min(playback.dur, playback.base + (playback.playing ? (performance.now() - playback.at) / 1000 : 0)));
+      const pct = (c / playback.dur) * 100;
+      if (H.progress) H.progress.forEach(p => p.style.width = pct + "%");
+      if (H.elapsed) H.elapsed.forEach(e => e.textContent = fmtTime(c));
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  loadLayout(urlLayout || "classic");
+
+  let ws, backoff = 500;
+  function connect() {
+    ws = new WebSocket("ws://" + location.host + "/ws");
+    ws.onopen = () => backoff = 500;
+    ws.onmessage = (e) => { try { render(JSON.parse(e.data)); } catch {} };
+    ws.onclose = () => { setTimeout(connect, backoff); backoff = Math.min(backoff * 1.6, 5000); };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+# build output
+bin/
+obj/
+publish/
+
+# editor + os cruft
+.vs/
+.idea/
+*.user
+.DS_Store
