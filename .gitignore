@@ -2,6 +2,9 @@
 bin/
 obj/
 publish/
+macos/nowplaying
+macos/*.app
+*.zip
 
 # editor + os cruft
 .vs/
